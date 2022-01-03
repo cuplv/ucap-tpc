@@ -40,10 +40,10 @@ data OrderInfo
 
 makeLenses ''OrderInfo
 
-type Order = (OrderInfo, Maybe CarrierId)
+type Order = (OrderInfo, Either () CarrierId)
 
 mkOrder :: CustomerId -> String -> [OrderLine] -> Order
-mkOrder a b c = (OrderInfo a b c,Nothing)
+mkOrder a b c = (OrderInfo a b c, Left ())
 
 oCId :: Lens' Order CustomerId
 oCId = _1 . oiCId
@@ -90,7 +90,7 @@ sRemoteCount = _4
 type IntE = CounterE Int
 type IntC = CounterC Int
 
-type StockE = ( IntE, IntE, IntE, IntE)
+type StockE = (IntE, IntE, IntE, IntE)
 
 type StockC = (IntC, IntC, IntC, IntC)
 
@@ -102,14 +102,14 @@ makeLenses ''CustomerInfo
 
 type Customer = (CustomerInfo, Int)
 
-type CustomerE = (IdentityE (), IntE)
+type CustomerE = (IdentityE CustomerInfo, IntE)
 
-type CustomerC = (IdentityC (), IntC)
+type CustomerC = (IdentityC CustomerInfo, IntC)
 
 cName :: Lens' Customer String
 cName = _1 . ciName
 
-cBalance :: Lens' Customer Int
+cBalance :: Lens' (a,b) b
 cBalance = _2
 
 type Tpcc 
@@ -133,14 +133,14 @@ type TpccC
     , MapC' OrderId OrderC
     )
 
-tpccStock :: Lens' Tpcc (Map (WarehouseId, ItemId) Stock)
+tpccStock :: Lens' (a,b,c,d) a
 tpccStock = _1
 
-tpccItems :: Lens' Tpcc (Map ItemId Item)
+tpccItems :: Lens' (a,b,c,d) b
 tpccItems = _2
 
-tpccCustomers :: Lens' Tpcc (Map CustomerId Customer)
+tpccCustomers :: Lens' (a,b,c,d) c
 tpccCustomers = _3
 
-tpccOrders :: Lens' Tpcc (Map OrderId Order)
+tpccOrders :: Lens' (a,b,c,d) d
 tpccOrders = _4
