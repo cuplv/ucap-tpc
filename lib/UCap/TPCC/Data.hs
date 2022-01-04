@@ -4,10 +4,6 @@ module UCap.TPCC.Data where
 
 import Data.Map (Map)
 import Data.UCap
-import Data.UCap.Counter
-import Data.UCap.Either
-import Data.UCap.Identity
-import Data.UCap.Map
 import Lens.Micro.Platform
 
 type CustomerId = String

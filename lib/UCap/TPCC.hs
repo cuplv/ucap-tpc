@@ -1,12 +1,15 @@
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies #-}
+
 module UCap.TPCC where
 
 import UCap.TPCC.Data
 
 import Control.Monad (foldM)
+import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Foldable (traverse_)
 import Data.UCap
-import Data.UCap.Counter
-import Data.UCap.Map
 import Data.UCap.Op
 import Lens.Micro.Platform
 
@@ -16,42 +19,31 @@ newOrder
   :: ReplicaId
   -> CustomerId
   -> [OrderLine]
-  -> TpccOp (Either String ())
-newOrder rid cid ols = mkOp idC uniC $ \s ->
-  case newOrderRs rid cid ols s of
-    Right e -> (e, Right ())
-    Left s -> (idE, Left s)
+  -> TpccOp OrderId
+newOrder rid cid ols =
+  takeItems "w1" ols
+  *> chargeCustomer cid ols
+  *> insertOrder rid (mkOrder cid "today" ols)
 
-payment :: CustomerId -> Int -> TpccOp ()
-payment cid amt = mkOp idC uniC $ \s ->
+acceptPayment :: CustomerId -> Int -> TpccOp ()
+acceptPayment cid amt = mkOp idC uniC $ \s ->
   (idE & tpccCustomers <>~ adjustE cid (idE & cBalance <>~ subE amt), ())
   -- Also increase the YTD of the warehouse and district...
 
-newOrderRs
-  :: ReplicaId
-  -> CustomerId
-  -> [OrderLine]
-  -> Tpcc
-  -> Either String (CEffect TpccC)
-newOrderRs rid cid ols s = do
-  -- Find total cost of order
-  tcost <- case olTotal s ols of
-    Right amt -> return amt
-    Left i -> Left $ "Item does not exist: " ++ i
-  -- Confirm item availability
-  subs <- case olShorts s "w1" ols of
-            Right e -> return e
-            Left s -> Left $ "Item shortage: " ++ show s
-  -- Create unique order id
-  let oid = newOid s rid
-  let order = mkOrder cid "today" ols
-  return $ idE
-    -- Charge customer
-    & tpccCustomers <>~ adjustE cid (idE & cBalance <>~ addE tcost)
-    -- Reduce item quantities
-    & (<> subs)
-    -- Create new order
-    & tpccOrders <>~ insertE oid order
+chargeCustomer :: CustomerId -> [OrderLine] -> TpccOp Int
+chargeCustomer cid ols = mkOp
+  uniC
+  (idC & tpccCustomers <>~ adjustC cid (idC & cBalance <>~ addAny))
+  (\s ->
+     let Right tcost = olTotal s ols
+     in (idE & tpccCustomers <>~ adjustE cid (idE & cBalance <>~ addE tcost), tcost))
+
+insertOrder :: ReplicaId -> Order -> TpccOp OrderId
+insertOrder rid o = mkOp
+  (uniC & tpccOrders /\~ insertAny)
+  (idE & tpccOrders <>~ insertAny)
+  (\s -> let oid = newOid s rid
+         in (idE & tpccOrders <>~ insertE oid o, oid))
 
 newOid :: Tpcc -> ReplicaId -> OrderId
 newOid s rid =
@@ -59,6 +51,34 @@ newOid s rid =
   in case nums of
        [] -> (rid,0)
        ns -> (rid, maximum ns + 1)
+
+takeItems :: WarehouseId -> [OrderLine] -> TpccOp ()
+takeItems w ols =
+  let irs = itemReqs w ols
+      f a = checkItem a *> opEffect (itemE a)
+  in traverse_ f irs
+
+itemReqs :: WarehouseId -> [OrderLine] -> [((WarehouseId, ItemId), Int)]
+itemReqs w ols = Map.toList $ foldl 
+  (\m ol -> Map.alter (g ol) (w, ol^.olItemId) m)
+  Map.empty
+  ols
+  where g ol a = Just $ ol^.olQuantity + (case a of
+                                            Just n -> n
+                                            Nothing -> 0)
+
+checkItem :: ((WarehouseId, ItemId), Int) -> TpccOp ()
+checkItem (i,n) = opTest
+  (uniC & tpccStock /\~ adjustC i (uniC & sQuantity /\~ addAny))
+  (\s -> case s ^. tpccStock . at i of
+           Just e | e^.sQuantity >= n -> True
+           _ -> False)
+
+itemE :: ((WarehouseId, ItemId), Int) -> TpccE
+itemE (i,n) = idE & tpccStock <>~ adjustE i (idE & sQuantity <>~ subE n)
+
+(/\~) :: (Meet a) => ASetter s t a a -> a -> s -> t
+(/\~) l b = l %~ meet b
 
 olShorts
   :: Tpcc
