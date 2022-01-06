@@ -10,10 +10,10 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Foldable (traverse_)
 import Data.UCap
+import Data.UCap.Lens
 import Data.UCap.Op
-import Lens.Micro.Platform
 
-type TpccOp = Op' TpccC
+type TpccOp a = Op' TpccC a
 
 newOrder
   :: ReplicaId
@@ -25,41 +25,49 @@ newOrder rid cid ols =
   *> chargeCustomer cid ols
   *> insertOrder rid (mkOrder cid "today" ols)
 
-acceptPayment :: CustomerId -> Int -> TpccOp ()
-acceptPayment cid amt = mkOp idC uniC $ \s ->
-  (idE & tpccCustomers <>~ adjustE cid (idE & cBalance <>~ subE amt), ())
-  -- Also increase the YTD of the warehouse and district...
+acceptPayment :: CustomerId -> Int -> TpccOp Int
+acceptPayment cid amt = edLift
+  (tpccCustomersEd *: keyEd cid *: cBalanceEd)
+  (subGuard 0 amt *> opQuery uniC)
 
 chargeCustomer :: CustomerId -> [OrderLine] -> TpccOp Int
-chargeCustomer cid ols = mkOp
-  uniC
-  (idC & tpccCustomers <>~ adjustC cid (idC & cBalance <>~ addAny))
-  (\s ->
-     let Right tcost = olTotal s ols
-     in (idE & tpccCustomers <>~ adjustE cid (idE & cBalance <>~ addE tcost), tcost))
+chargeCustomer cid ols =
+  let calcO :: TpccOp Int
+      calcO = mkOp uniC idC $ \s -> (idE, olTotal s ols)
+      addO = edLiftP (tpccCustomersEd *: keyEd cid *: cBalanceEd) preAdd
+  in calcO <*>= addO
 
 insertOrder :: ReplicaId -> Order -> TpccOp OrderId
-insertOrder rid o = mkOp
-  (uniC & tpccOrders /\~ insertAny)
-  (idE & tpccOrders <>~ insertAny)
+insertOrder rid o = edLift tpccOrdersEd $ mkOp
+  insertAny
+  -- The following write-requirement (insertAny) is stronger than
+  -- necessary, but MapC doesn't give a way to "insert using any key
+  -- which is a pair where the first component matches a particular
+  -- value."  One solution to this issue is to use a map-of-maps
+  -- instead of a pair-keyed map.
+  insertAny
   (\s -> let oid = newOid s rid
-         in (idE & tpccOrders <>~ insertE oid o, oid))
+         in (insertE oid o, oid))
 
-newOid :: Tpcc -> ReplicaId -> OrderId
+newOid :: Map OrderId Order -> ReplicaId -> OrderId
 newOid s rid =
-  let nums = map snd . filter ((== rid) . fst) $ Map.keys (s^.tpccOrders)
+  let nums = map snd . filter ((== rid) . fst) $ Map.keys s
   in case nums of
        [] -> (rid,0)
        ns -> (rid, maximum ns + 1)
 
 takeItems :: WarehouseId -> [OrderLine] -> TpccOp ()
-takeItems w ols =
-  let irs = itemReqs w ols
-      f a = checkItem a *> opEffect (itemE a)
-  in traverse_ f irs
+takeItems w ols = traverseAA_ itemOp (itemReqs w ols)
+
+traverseAA_
+  :: (Applicative f, Applicative g)
+  => (a -> f (g b))
+  -> [a]
+  -> f (g ())
+traverseAA_ f = foldr (\a m -> f a *>*> m) (pure (pure ()))
 
 itemReqs :: WarehouseId -> [OrderLine] -> [((WarehouseId, ItemId), Int)]
-itemReqs w ols = Map.toList $ foldl 
+itemReqs w ols = Map.toList $ foldl
   (\m ol -> Map.alter (g ol) (w, ol^.olItemId) m)
   Map.empty
   ols
@@ -67,47 +75,15 @@ itemReqs w ols = Map.toList $ foldl
                                             Just n -> n
                                             Nothing -> 0)
 
-checkItem :: ((WarehouseId, ItemId), Int) -> TpccOp ()
-checkItem (i,n) = opTest
-  (uniC & tpccStock /\~ adjustC i (uniC & sQuantity /\~ addAny))
-  (\s -> case s ^. tpccStock . at i of
-           Just e | e^.sQuantity >= n -> True
-           _ -> False)
+itemOp :: ((WarehouseId, ItemId), Int) -> TpccOp Int
+itemOp (i,n) = edLift
+  (tpccStockEd *: keyEd i *: sQuantityEd)
+  (subGuard 0 n)
 
-itemE :: ((WarehouseId, ItemId), Int) -> TpccE
-itemE (i,n) = idE & tpccStock <>~ adjustE i (idE & sQuantity <>~ subE n)
-
-(/\~) :: (Meet a) => ASetter s t a a -> a -> s -> t
-(/\~) l b = l %~ meet b
-
-olShorts
-  :: Tpcc
-  -> WarehouseId
-  -> [OrderLine]
-  -> Either (ItemId,Int) TpccE -- (MapE (WarehouseId, ItemId) StockE)
-olShorts s w = foldM
-  (\es ol -> case olShort s w ol of
-               Right e -> Right $ es <> e
-               Left s -> Left s)
-  idE
-
-olShort
-  :: Tpcc
-  -> WarehouseId
-  -> OrderLine
-  -> Either (ItemId,Int) TpccE -- (MapE (WarehouseId, ItemId) StockE)
-olShort s w ol =
-  case s ^. tpccStock . at (w, ol^.olItemId) of
-    Just st | st^.sQuantity > ol^.olQuantity ->
-              Right $ idE & tpccStock <>~ adjustE (w, ol^.olItemId) (idE & sQuantity <>~ subE (ol^.olQuantity))
-            | otherwise -> Left (ol^.olItemId, ol^.olQuantity - st^.sQuantity)
-    Nothing -> Left (ol^.olItemId, ol^.olQuantity)
-
-olTotal :: Tpcc -> [OrderLine] -> Either ItemId Int
-olTotal s = foldM
+olTotal :: Tpcc -> [OrderLine] -> Int
+olTotal s = foldl
   (\a ol -> case olCost s ol of
-              Just c -> Right $ a + c
-              Nothing -> Left $ ol^.olItemId)
+              Just c -> a + c)
   0
 
 olCost :: Tpcc -> OrderLine -> Maybe Int

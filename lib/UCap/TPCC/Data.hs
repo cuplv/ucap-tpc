@@ -1,9 +1,12 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module UCap.TPCC.Data where
 
 import Data.Map (Map)
 import Data.UCap
+import Data.UCap.Lens
+import Data.UCap.Op
 import Lens.Micro.Platform
 
 type CustomerId = String
@@ -74,6 +77,13 @@ type Stock = (Int,Int,Int,Int)
 sQuantity :: Lens' (a,b,c,d) a
 sQuantity = _1
 
+sQuantityEd :: Editor StockC IntC
+sQuantityEd = Editor
+  (pure . (^. sQuantity))
+  (meetTo sQuantity)
+  (plusTo sQuantity)
+  (plusTo sQuantity)
+
 sYtd :: Lens' (a,b,c,d) b
 sYtd = _2
 
@@ -108,6 +118,9 @@ cName = _1 . ciName
 cBalance :: Lens' (a,b) b
 cBalance = _2
 
+cBalanceEd :: (Cap a) => Editor (a,b) b
+cBalanceEd = _2ed
+
 type Tpcc 
   = ( Map (WarehouseId, ItemId) Stock -- stock
     , Map ItemId Item -- items
@@ -132,11 +145,45 @@ type TpccC
 tpccStock :: Lens' (a,b,c,d) a
 tpccStock = _1
 
+tpccStockEd :: Editor TpccC (MapC' (WarehouseId, ItemId) StockC)
+tpccStockEd = Editor
+  (\(s,_,_,_) -> pure s)
+  (\c -> (c,uniC,uniC,uniC))
+  (\c -> (c,idC,idC,idC))
+  (\e -> (e,idE,idE,idE))
+
 tpccItems :: Lens' (a,b,c,d) b
 tpccItems = _2
+
+tpccItemsEd :: Editor TpccC (MapC' ItemId (IdentityC Item))
+tpccItemsEd = Editor
+  (\(_,s,_,_) -> pure s)
+  (\c -> (uniC,c,uniC,uniC))
+  (\c -> (idC,c,idC,idC))
+  (\e -> (idE,e,idE,idE))
 
 tpccCustomers :: Lens' (a,b,c,d) c
 tpccCustomers = _3
 
+tpccCustomersEd :: Editor TpccC (MapC' CustomerId CustomerC)
+tpccCustomersEd = Editor
+  (pure . (^. tpccCustomers))
+  (meetTo tpccCustomers)
+  (plusTo tpccCustomers)
+  (plusTo tpccCustomers)
+
 tpccOrders :: Lens' (a,b,c,d) d
 tpccOrders = _4
+
+tpccOrdersEd :: Editor TpccC (MapC' OrderId OrderC)
+tpccOrdersEd = Editor
+  (pure . (^. tpccOrders))
+  (meetTo tpccOrders)
+  (plusTo tpccOrders)
+  (plusTo tpccOrders)
+
+(*>*>) :: (Applicative f, Applicative g) => f (g a) -> f (g b) -> f (g b)
+f *>*> g = fmap (*>) f <*> g
+
+(<*>*>) :: (Applicative f, Applicative g) => f (g (a -> b)) -> f (g a) -> f (g b)
+f <*>*> g = fmap (<*>) f <*> g
