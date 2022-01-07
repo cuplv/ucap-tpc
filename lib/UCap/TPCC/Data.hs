@@ -5,8 +5,8 @@ module UCap.TPCC.Data where
 
 import Data.Map (Map)
 import Data.UCap
+import Data.UCap.Editor
 import Data.UCap.Lens
-import Data.UCap.Op
 import Lens.Micro.Platform
 
 type CustomerId = String
@@ -181,9 +181,3 @@ tpccOrdersEd = Editor
   (meetTo tpccOrders)
   (plusTo tpccOrders)
   (plusTo tpccOrders)
-
-(*>*>) :: (Applicative f, Applicative g) => f (g a) -> f (g b) -> f (g b)
-f *>*> g = fmap (*>) f <*> g
-
-(<*>*>) :: (Applicative f, Applicative g) => f (g (a -> b)) -> f (g a) -> f (g b)
-f <*>*> g = fmap (<*>) f <*> g

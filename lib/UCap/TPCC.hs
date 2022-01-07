@@ -27,7 +27,7 @@ newOrder rid cid ols =
   *> insertOrder rid (mkOrder cid "today" ols)
 
 acceptPayment :: (Monad m) => CustomerId -> Int -> TpccOp a m Int
-acceptPayment cid amt = edLift'
+acceptPayment cid amt = edLift
   (tpccCustomersEd *: keyEd cid *: cBalanceEd)
   (subGuard 0 amt *> queryOp uniC)
 
@@ -35,14 +35,14 @@ chargeCustomer :: (Monad m) => CustomerId -> [OrderLine] -> TpccOp a m Int
 chargeCustomer cid ols =
   let read = queryOp uniC
       calc = mapOp (\s -> olTotal s ols)
-      add = edLift' (tpccCustomersEd *: keyEd cid *: cBalanceEd) addOp'
-  in read *>> calc *>> add
+      add = edLift (tpccCustomersEd *: keyEd cid *: cBalanceEd) addOp'
+  in read *>= calc *>= add
 
 insertOrder :: (Monad m) => ReplicaId -> Order -> TpccOp a m OrderId
-insertOrder rid o = edLift' tpccOrdersEd $
+insertOrder rid o = edLift tpccOrdersEd $
   queryOp idC
-  *>> mapOp (\s -> (newOid s rid, o))
-  *>> insertOp
+  *>= mapOp (\s -> (newOid s rid, o))
+  *>= insertOp
 
 newOid :: Map OrderId Order -> ReplicaId -> OrderId
 newOid s rid =
@@ -64,7 +64,7 @@ itemReqs w ols = Map.toList $ foldl
                                             Nothing -> 0)
 
 itemOp :: (Monad m) => ((WarehouseId, ItemId), Int) -> TpccOp a m Int
-itemOp (i,n) = edLift'
+itemOp (i,n) = edLift
   (tpccStockEd *: keyEd i *: sQuantityEd)
   (subGuard 0 n)
 
