@@ -5,7 +5,7 @@ module UCap.TPCC where
 
 import UCap.TPCC.Data
 
-import Control.Monad (foldM)
+import Control.Monad.Except
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Foldable (traverse_)
@@ -13,41 +13,36 @@ import Data.UCap
 import Data.UCap.Lens
 import Data.UCap.Op
 
-type TpccOp a = Op' TpccC a
+type TpccOp a m b = Op TpccC a (ExceptT () m) b
 
 newOrder
-  :: ReplicaId
+  :: (Monad m)
+  => ReplicaId
   -> CustomerId
   -> [OrderLine]
-  -> TpccOp OrderId
+  -> TpccOp a m OrderId
 newOrder rid cid ols =
   takeItems "w1" ols
   *> chargeCustomer cid ols
   *> insertOrder rid (mkOrder cid "today" ols)
 
-acceptPayment :: CustomerId -> Int -> TpccOp Int
-acceptPayment cid amt = edLift
+acceptPayment :: (Monad m) => CustomerId -> Int -> TpccOp a m Int
+acceptPayment cid amt = edLift'
   (tpccCustomersEd *: keyEd cid *: cBalanceEd)
-  (subGuard 0 amt *> opQuery uniC)
+  (subGuard 0 amt *> queryOp uniC)
 
-chargeCustomer :: CustomerId -> [OrderLine] -> TpccOp Int
+chargeCustomer :: (Monad m) => CustomerId -> [OrderLine] -> TpccOp a m Int
 chargeCustomer cid ols =
-  let calcO :: TpccOp Int
-      calcO = mkOp uniC idC $ \s -> (idE, olTotal s ols)
-      addO = edLiftP (tpccCustomersEd *: keyEd cid *: cBalanceEd) preAdd
-  in calcO <*>= addO
+  let read = queryOp uniC
+      calc = mapOp (\s -> olTotal s ols)
+      add = edLift' (tpccCustomersEd *: keyEd cid *: cBalanceEd) addOp'
+  in read *>> calc *>> add
 
-insertOrder :: ReplicaId -> Order -> TpccOp OrderId
-insertOrder rid o = edLift tpccOrdersEd $ mkOp
-  insertAny
-  -- The following write-requirement (insertAny) is stronger than
-  -- necessary, but MapC doesn't give a way to "insert using any key
-  -- which is a pair where the first component matches a particular
-  -- value."  One solution to this issue is to use a map-of-maps
-  -- instead of a pair-keyed map.
-  insertAny
-  (\s -> let oid = newOid s rid
-         in (insertE oid o, oid))
+insertOrder :: (Monad m) => ReplicaId -> Order -> TpccOp a m OrderId
+insertOrder rid o = edLift' tpccOrdersEd $
+  queryOp idC
+  *>> mapOp (\s -> (newOid s rid, o))
+  *>> insertOp
 
 newOid :: Map OrderId Order -> ReplicaId -> OrderId
 newOid s rid =
@@ -56,15 +51,8 @@ newOid s rid =
        [] -> (rid,0)
        ns -> (rid, maximum ns + 1)
 
-takeItems :: WarehouseId -> [OrderLine] -> TpccOp ()
-takeItems w ols = traverseAA_ itemOp (itemReqs w ols)
-
-traverseAA_
-  :: (Applicative f, Applicative g)
-  => (a -> f (g b))
-  -> [a]
-  -> f (g ())
-traverseAA_ f = foldr (\a m -> f a *>*> m) (pure (pure ()))
+takeItems :: (Monad m) => WarehouseId -> [OrderLine] -> TpccOp a m ()
+takeItems w ols = traverse_ itemOp (itemReqs w ols)
 
 itemReqs :: WarehouseId -> [OrderLine] -> [((WarehouseId, ItemId), Int)]
 itemReqs w ols = Map.toList $ foldl
@@ -75,8 +63,8 @@ itemReqs w ols = Map.toList $ foldl
                                             Just n -> n
                                             Nothing -> 0)
 
-itemOp :: ((WarehouseId, ItemId), Int) -> TpccOp Int
-itemOp (i,n) = edLift
+itemOp :: (Monad m) => ((WarehouseId, ItemId), Int) -> TpccOp a m Int
+itemOp (i,n) = edLift'
   (tpccStockEd *: keyEd i *: sQuantityEd)
   (subGuard 0 n)
 
