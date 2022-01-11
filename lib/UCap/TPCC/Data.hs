@@ -135,6 +135,14 @@ type TpccE
     , MapE OrderId OrderE
     )
 
+type StocksC = MapC' (WarehouseId, ItemId) StockC
+
+type ItemsC = MapC' ItemId (IdentityC Item)
+
+type CustomersC = MapC' CustomerId CustomerC
+
+type OrdersC = MapC' OrderId OrderC
+
 type TpccC
   = ( MapC' (WarehouseId, ItemId) StockC
     , MapC' ItemId (IdentityC Item)
