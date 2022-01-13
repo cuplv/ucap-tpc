@@ -10,10 +10,7 @@ import Control.Monad.Except
 import Data.Foldable (for_)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Foldable (traverse_)
-import Data.UCap
-import Data.UCap.Lens
-import Data.UCap.Op
+import UCap
 
 -- | Transactions that can abort, using the ExceptT monad transformer.
 type Opx c a m b = Op c a (ExceptT () m) b
@@ -28,14 +25,14 @@ newOrder
   -> Opx TpccC a m OrderId
 newOrder rid cid ols =
   -- Reduce item warehouse stock counts (for warehouse "w1"),
-  (tpccStockEd ^# takeItems "w1" ols)
+  (stockLf ^# takeItems "w1" ols)
   -- and then calculate order cost for customer,
-  *> (tpccItemsEd ^# calcCost ols)
+  *> (itemsLf ^# calcCost ols)
      -- feeding that cost into a transaction that applies it to the
      -- customer's balance,
-     *>= (tpccCustomersEd >: keyEd cid >: cBalanceEd ^# addOp')
+     *>= (customersLf >: keyLf cid >: balanceLf ^# addOp')
   -- and finally, on the table of orders,
-  *> tpccOrdersEd
+  *> ordersLf
      -- create an unused order ID,
      ^# (newOid rid
          -- pair it with the new order (for date "today"),
@@ -49,12 +46,12 @@ newOrder rid cid ols =
 acceptPayment :: (Monad m) => CustomerId -> Int -> Opx TpccC a m Int
 acceptPayment cid amt =
   -- Zoom in on customer's balance,
-  tpccCustomersEd >: keyEd cid >: cBalanceEd
+  customersLf >: keyLf cid >: balanceLf
   -- subtract the payed amount from the balance,
   ^# (subGuard 0 amt
       -- and read the resulting balance as the transaction's return
       -- value.
-      *> queryOp uniC)
+      *> query uniC)
 
 -- | Calculate the total cost of an OrderLine list, by reading the
 -- item prices in the application state.
@@ -64,7 +61,7 @@ calcCost ols =
                     Just item -> return $ ol^.olQuantity * item^.iPrice
                     Nothing -> throwError ()
       total s = foldM (\a ol -> (+ a) <$> cost ol s) 0 ols
-  in queryOp uniC *>= mapOp' total
+  in query uniC *>= mapOp' total
 
 -- | Generate a fresh order ID that has not been used in the current
 -- order table.  This transaction takes a complete (idC) read of the
@@ -73,7 +70,7 @@ calcCost ols =
 newOid :: (Monad m) => ReplicaId -> Opx OrdersC a m OrderId
 newOid rid =
   -- Take a complete read of the table.
-  queryOp idC
+  query idC
   -- Using that snapshot, create a new ID that increments on any
   -- existing ID.
   *>= mapOp (\s ->
@@ -95,7 +92,7 @@ takeItems w ols =
   -- item...
   for_ (itemReqs w ols) $ \(item, quantity) ->
     -- by zooming in on the quantity field of item's stock listing...
-    (keyEd item >: sQuantityEd)
+    (keyLf item >: quantityLf)
     -- and subtracting quantity from that field, as long as result is
     -- not below 0.  The transaction "subGuard lim amt", provided by
     -- the ucap library, aborts when the result of subtracting amt
@@ -111,8 +108,3 @@ itemReqs w ols = Map.toList $ foldl
   where g ol a = Just $ ol^.olQuantity + (case a of
                                             Just n -> n
                                             Nothing -> 0)
-
-(^#) :: (Monad m) => Editor c1 c2 -> Op c2 a m b -> Op c1 a m b
-(^#) = edLift
-
-(>:) = (*:)
